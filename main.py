@@ -48,19 +48,6 @@ if LANGSMITH_API_KEY:
     os.environ["LANGSMITH_API_KEY"] = LANGSMITH_API_KEY
 
 
-# ============================================================
-# API KEY CHECK
-# ============================================================
-
-if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY is missing in .env file")
-
-if not TAVILY_API_KEY:
-    raise ValueError("TAVILY_API_KEY is missing in .env file")
-
-if not LANGSMITH_API_KEY:
-    raise ValueError("LANGSMITH_API_KEY is missing in .env file")
-
 
 # ============================================================
 # LLM
