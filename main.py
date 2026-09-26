@@ -32,9 +32,24 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 load_dotenv()
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
-LANGSMITH_API_KEY = os.getenv("LANGSMITH_API_KEY")
+def get_secret(name):
+    
+    value = os.getenv(name)
+
+    if value:
+        return value
+
+    
+    try:
+        import streamlit as st
+        return st.secrets.get(name)
+    except Exception:
+        return None
+
+
+GROQ_API_KEY = get_secret("GROQ_API_KEY")
+TAVILY_API_KEY = get_secret("TAVILY_API_KEY")
+LANGSMITH_API_KEY = get_secret("LANGSMITH_API_KEY")
 
 
 # ============================================================
