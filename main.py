@@ -22,30 +22,45 @@ from langchain_tavily import TavilySearch
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 
 # ============================================================
-# LOAD ENVIRONMENT VARIABLES
+# LOAD ENVIRONMENT VARIABLES / STREAMLIT SECRETS
 # ============================================================
 
 load_dotenv()
 
+
 def get_secret(name):
-    
+    """
+    Get secret from:
+    1. Environment variable (.env locally)
+    2. Streamlit secrets (Streamlit Cloud)
+    """
+
+    # Local .env / system environment
     value = os.getenv(name)
 
     if value:
         return value
 
-    
+    # Streamlit Cloud
     try:
         import streamlit as st
-        return st.secrets.get(name)
-    except Exception:
-        return None
 
+        if name in st.secrets:
+            return st.secrets[name]
+
+    except Exception:
+        pass
+
+    return None
+
+
+# ============================================================
+# API KEYS
+# ============================================================
 
 GROQ_API_KEY = get_secret("GROQ_API_KEY")
 TAVILY_API_KEY = get_secret("TAVILY_API_KEY")
@@ -53,15 +68,47 @@ LANGSMITH_API_KEY = get_secret("LANGSMITH_API_KEY")
 
 
 # ============================================================
+# API KEY VALIDATION
+# ============================================================
+
+if not GROQ_API_KEY:
+    raise ValueError(
+        "GROQ_API_KEY is missing. "
+        "Add it to .env locally or Streamlit Cloud Secrets."
+    )
+
+if not TAVILY_API_KEY:
+    raise ValueError(
+        "TAVILY_API_KEY is missing. "
+        "Add it to .env locally or Streamlit Cloud Secrets."
+    )
+
+
+# ============================================================
+# SET ENVIRONMENT VARIABLES
+# ============================================================
+
+# This makes the keys available to libraries that
+# automatically read environment variables.
+
+os.environ["GROQ_API_KEY"] = GROQ_API_KEY
+os.environ["TAVILY_API_KEY"] = TAVILY_API_KEY
+
+
+# ============================================================
 # LANGSMITH CONFIGURATION
 # ============================================================
 
-os.environ["LANGSMITH_TRACING"] = "true"
-os.environ["LANGSMITH_PROJECT"] = "Agentic-Research-Assistant"
-
 if LANGSMITH_API_KEY:
-    os.environ["LANGSMITH_API_KEY"] = LANGSMITH_API_KEY
 
+    os.environ["LANGSMITH_API_KEY"] = LANGSMITH_API_KEY
+    os.environ["LANGSMITH_TRACING"] = "true"
+    os.environ["LANGSMITH_PROJECT"] = "Agentic-Research-Assistant"
+
+else:
+
+    # LangSmith is optional
+    os.environ["LANGSMITH_TRACING"] = "false"
 
 
 # ============================================================
@@ -73,7 +120,7 @@ llm = ChatGroq(
     temperature=0,
     max_completion_tokens=256,
     reasoning_effort="low",
-    api_key=GROQ_API_KEY
+    api_key=GROQ_API_KEY,
 )
 
 
@@ -107,36 +154,38 @@ def retrieve(query: str) -> str:
     Use this tool for questions related to the stored documents.
     """
 
-    # No extra LLM query rewriting.
-    # This saves tokens and reduces unnecessary API calls.
+    print(f"\n[RAG QUERY] {query}")
 
-    rewritten_query = query
+    try:
 
-    print(f"\n[RAG QUERY] {rewritten_query}")
+        results = vectorstore.similarity_search_with_score(
+            query,
+            k=3
+        )
 
-    # Retrieve only 3 documents
-    results = vectorstore.similarity_search_with_score(
-        rewritten_query,
-        k=3
-    )
+        output = []
 
-    output = []
+        for doc, score in results:
 
-    for doc, score in results:
+            # Keep reasonably relevant documents
+            if score < 1.0:
 
-        # Keep only reasonably relevant documents
-        if score < 1.0:
+                content = doc.page_content[:1500]
 
-            # Limit each document size
-            content = doc.page_content[:1500]
+                output.append(content)
 
-            output.append(content)
+        if not output:
 
-    if not output:
-        return "No relevant information found in the knowledge base."
+            return (
+                "No relevant information found "
+                "in the knowledge base."
+            )
 
-    # Compact RAG context
-    return "\n\n---\n\n".join(output)
+        return "\n\n---\n\n".join(output)
+
+    except Exception as e:
+
+        return f"RAG retrieval error: {str(e)}"
 
 
 # ============================================================
@@ -144,6 +193,7 @@ def retrieve(query: str) -> str:
 # ============================================================
 
 allowed_operators = {
+
     ast.Add: operator.add,
     ast.Sub: operator.sub,
     ast.Mult: operator.mul,
@@ -152,40 +202,62 @@ allowed_operators = {
     ast.Mod: operator.mod,
     ast.USub: operator.neg,
     ast.UAdd: operator.pos,
+
 }
 
 
 def safe_calculate(node):
 
+    # Numbers
     if isinstance(node, ast.Constant):
 
         if isinstance(node.value, (int, float)):
+
             return node.value
 
         raise ValueError("Invalid number")
 
+
+    # Binary operations
     if isinstance(node, ast.BinOp):
 
         left = safe_calculate(node.left)
+
         right = safe_calculate(node.right)
 
         operator_type = type(node.op)
 
         if operator_type not in allowed_operators:
-            raise ValueError("Operator not allowed")
 
-        return allowed_operators[operator_type](left, right)
+            raise ValueError(
+                "Operator not allowed"
+            )
 
+        return allowed_operators[operator_type](
+            left,
+            right
+        )
+
+
+    # Unary operations
     if isinstance(node, ast.UnaryOp):
 
-        operand = safe_calculate(node.operand)
+        operand = safe_calculate(
+            node.operand
+        )
 
         operator_type = type(node.op)
 
         if operator_type not in allowed_operators:
-            raise ValueError("Operator not allowed")
 
-        return allowed_operators[operator_type](operand)
+            raise ValueError(
+                "Operator not allowed"
+            )
+
+        return allowed_operators[operator_type](
+            operand
+        )
+
 
     raise ValueError("Invalid expression")
 
@@ -207,7 +279,9 @@ def calculator(expression: str) -> str:
             mode="eval"
         )
 
-        result = safe_calculate(tree.body)
+        result = safe_calculate(
+            tree.body
+        )
 
         return str(result)
 
@@ -228,7 +302,8 @@ tavily_search = TavilySearch(
 @tool
 def web_search(query: str) -> str:
     """
-    Search the web for current, latest, or real-time information.
+    Search the web for current, latest,
+    recent, or real-time information.
     """
 
     print(f"\n[WEB SEARCH] {query}")
@@ -236,14 +311,14 @@ def web_search(query: str) -> str:
     try:
 
         result = tavily_search.invoke(
-            {"query": query}
+            {
+                "query": query
+            }
         )
 
-        # Convert result to text
         result_text = str(result)
 
-        # Limit web-search context
-        # This prevents very large requests to the LLM.
+        # Limit context size
         result_text = result_text[:4000]
 
         return result_text
@@ -267,22 +342,55 @@ tools = [
 print("\nAvailable tools:")
 
 for t in tools:
-    print(f"- {t.name}")
+
+    print(
+        f"- {t.name}"
+    )
 
 
 # ============================================================
 # LLM WITH TOOLS
 # ============================================================
 
-llm_with_tools = llm.bind_tools(tools)
+llm_with_tools = llm.bind_tools(
+    tools
+)
+
+
+# ============================================================
+# TOOL CHECK
+# ============================================================
 
 print("\n========== TOOL CHECK ==========")
 
 for t in tools:
-    print("Tool object:", t)
-    print("Tool name:", getattr(t, "name", None))
-    print("Tool description:", getattr(t, "description", None))
-    print("-------------------------------")
+
+    print(
+        "Tool object:",
+        t
+    )
+
+    print(
+        "Tool name:",
+        getattr(
+            t,
+            "name",
+            None
+        )
+    )
+
+    print(
+        "Tool description:",
+        getattr(
+            t,
+            "description",
+            None
+        )
+    )
+
+    print(
+        "-------------------------------"
+    )
 
 
 # ============================================================
@@ -304,25 +412,25 @@ class State(TypedDict):
 SYSTEM_PROMPT = """
 You are an intelligent Agentic Research Assistant.
 
-You have access to three tools:
+You have access to three tools.
 
 1. retrieve
-   Use this tool when the question is related to information
-   contained in the local knowledge base.
+Use this tool when the question is related to
+information contained in the local knowledge base.
 
 2. calculator
-   Use this tool for mathematical calculations.
+Use this tool for mathematical calculations.
 
 3. web_search
-   Use this tool when the user asks for current, latest,
-   recent, real-time, or web-based information.
+Use this tool when the user asks for current,
+latest, recent, real-time, or web-based information.
 
 Tool selection rules:
 
 - Do not use RAG for simple mathematics.
 - Use calculator for mathematical calculations.
 - Use web_search for latest/current information.
-- Use retrieve for questions related to the stored documents.
+- Use retrieve for questions related to stored documents.
 - If a tool is not necessary, answer directly.
 
 Always provide a clear and concise final answer.
@@ -337,35 +445,30 @@ def chatbot(state: State):
 
     messages = state["messages"]
 
-    # ========================================================
-    # MEMORY OPTIMIZATION
-    # ========================================================
-    # Only send the most recent 6 messages to the LLM.
-    #
-    # The complete conversation is still stored in SQLite,
-    # but we don't send the entire history to Groq every time.
-    # This reduces token usage and improves response speed.
-    # ========================================================
+    # Keep only recent messages
+    # to reduce token usage.
 
     recent_messages = messages[-6:]
 
     messages_with_system = [
+
         {
             "role": "system",
             "content": SYSTEM_PROMPT
         }
+
     ] + recent_messages
 
-    # ========================================================
-    # LLM CALL
-    # ========================================================
 
     response = llm_with_tools.invoke(
         messages_with_system
     )
 
+
     return {
-        "messages": [response]
+        "messages": [
+            response
+        ]
     }
 
 
@@ -373,7 +476,9 @@ def chatbot(state: State):
 # TOOL NODE
 # ============================================================
 
-tool_node = ToolNode(tools)
+tool_node = ToolNode(
+    tools
+)
 
 
 # ============================================================
@@ -386,11 +491,18 @@ def router(state: State):
 
     last_message = messages[-1]
 
-    # If LLM wants to call a tool
-    if hasattr(last_message, "tool_calls"):
+
+    # Check whether the LLM requested a tool
+
+    if hasattr(
+        last_message,
+        "tool_calls"
+    ):
 
         if last_message.tool_calls:
+
             return "tools"
+
 
     return END
 
@@ -399,10 +511,13 @@ def router(state: State):
 # BUILD LANGGRAPH
 # ============================================================
 
-graph = StateGraph(State)
+graph = StateGraph(
+    State
+)
 
 
-# Add nodes
+# Nodes
+
 graph.add_node(
     "chatbot",
     chatbot
@@ -414,7 +529,8 @@ graph.add_node(
 )
 
 
-# Start → chatbot
+# START → chatbot
+
 graph.add_edge(
     START,
     "chatbot"
@@ -422,17 +538,23 @@ graph.add_edge(
 
 
 # chatbot → tools OR END
+
 graph.add_conditional_edges(
+
     "chatbot",
+
     router,
+
     {
         "tools": "tools",
         END: END
     }
+
 )
 
 
 # tools → chatbot
+
 graph.add_edge(
     "tools",
     "chatbot"
@@ -443,14 +565,20 @@ graph.add_edge(
 # PERSISTENT MEMORY
 # ============================================================
 
-MEMORY_DATABASE = "conversation_memory.sqlite"
+MEMORY_DATABASE = (
+    "conversation_memory.sqlite"
+)
+
 
 conn = sqlite3.connect(
     MEMORY_DATABASE,
     check_same_thread=False
 )
 
-memory = SqliteSaver(conn)
+
+memory = SqliteSaver(
+    conn
+)
 
 
 # ============================================================
@@ -461,7 +589,10 @@ app = graph.compile(
     checkpointer=memory
 )
 
-print("\nLangGraph application compiled successfully.")
+
+print(
+    "\nLangGraph application compiled successfully."
+)
 
 
 # ============================================================
@@ -470,72 +601,114 @@ print("\nLangGraph application compiled successfully.")
 
 def main():
 
-    print("\n" + "=" * 60)
-    print("🤖 AGENTIC RESEARCH ASSISTANT")
-    print("=" * 60)
+    print(
+        "\n" + "=" * 60
+    )
 
-    print("\nType 'exit' to stop.")
+    print(
+        "🤖 AGENTIC RESEARCH ASSISTANT"
+    )
 
-    # Persistent conversation thread
+    print(
+        "=" * 60
+    )
+
+    print(
+        "\nType 'exit' to stop."
+    )
+
+
     THREAD_ID = "totan_session_1"
 
+
     config = {
+
         "configurable": {
+
             "thread_id": THREAD_ID
+
         }
+
     }
+
 
     while True:
 
         try:
 
-            user_input = input("\nYou: ")
+            user_input = input(
+                "\nYou: "
+            )
+
 
             # Exit
+
             if user_input.lower() in [
+
                 "exit",
                 "quit",
                 "bye"
+
             ]:
 
-                print("\nGoodbye! 👋")
+                print(
+                    "\nGoodbye! 👋"
+                )
+
                 break
 
+
             # Empty input
+
             if not user_input.strip():
+
                 continue
 
-            # =================================================
-            # RUN LANGGRAPH
-            # =================================================
+
+            # Run LangGraph
 
             result = app.invoke(
+
                 {
                     "messages": [
+
                         HumanMessage(
                             content=user_input
                         )
+
                     ]
+
                 },
+
                 config=config
+
             )
 
-            # =================================================
-            # FINAL RESPONSE
-            # =================================================
 
-            final_message = result["messages"][-1]
+            # Final response
 
-            print("\nAssistant:")
+            final_message = (
+                result["messages"][-1]
+            )
+
+
+            print(
+                "\nAssistant:"
+            )
 
             print(
                 final_message.content
             )
 
+
         except KeyboardInterrupt:
 
-            print("\n\nProgram stopped.")
+            print(
+                "\n\nProgram stopped."
+            )
+
             break
+
 
         except Exception as e:
 
@@ -551,4 +724,3 @@ def main():
 if __name__ == "__main__":
 
     main()
-
