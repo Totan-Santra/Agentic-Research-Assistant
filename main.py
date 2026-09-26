@@ -73,6 +73,7 @@ llm = ChatGroq(
     temperature=0,
     max_completion_tokens=256,
     reasoning_effort="low",
+    api_key=GROQ_API_KEY
 )
 
 
