@@ -1,0 +1,30 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local database / memory
+conversation_memory.sqlite
+
+# Vector database
+Chromadb/
+
+# PDFs / local data
+*.pdf
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
+Thumbs.db
